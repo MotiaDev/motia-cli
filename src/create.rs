@@ -35,8 +35,8 @@ fn is_valid_folder_name(name: &str) -> Result<(), &'static str> {
     if name.is_empty() {
         return Err("Project folder name cannot be empty.");
     }
-    if name.contains("..") {
-        return Err("Project folder name cannot contain '..'.");
+    if name == ".." {
+        return Err("Project folder name cannot be '..'.");
     }
     if name.starts_with('/') || name.starts_with('\\') {
         return Err("Project folder name cannot be an absolute path.");
@@ -60,13 +60,7 @@ fn is_dir_empty(path: &Path) -> bool {
 }
 
 fn check_prerequisite(cmd: &str) -> bool {
-    Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    which::which(cmd).is_ok()
 }
 
 fn is_iii_available() -> bool {
@@ -164,6 +158,13 @@ pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
     }
 
     let target_dir = std::env::current_dir()?.join(&folder_name);
+
+    if target_dir.exists() && !target_dir.is_dir() {
+        anyhow::bail!(
+            "\"{}\" already exists and is not a directory. Remove or rename it first.",
+            folder_name
+        );
+    }
 
     if target_dir.exists() {
         if is_dir_empty(&target_dir) {
@@ -311,15 +312,18 @@ pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
 
         if rel_path.ends_with("package.json") {
             if let Ok(mut pkg) = serde_json::from_str::<serde_json::Value>(&final_content) {
-                let name = if rel_path.contains("nodejs/") {
-                    format!("{}-nodejs", folder_name)
-                } else if folder_name == "." {
+                let base_name = if folder_name == "." {
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                         .unwrap_or_else(|| "my-motia-project".to_string())
                 } else {
                     folder_name.clone()
+                };
+                let name = if rel_path.contains("nodejs/") {
+                    format!("{}-nodejs", base_name)
+                } else {
+                    base_name
                 };
                 pkg["name"] = serde_json::Value::String(name);
                 final_content = serde_json::to_string_pretty(&pkg)?;
@@ -347,14 +351,14 @@ pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
 
     match lang {
         Language::NodeJs => {
-            run_install(&target_dir, "npm", &["install"])?;
+            run_install(&target_dir, "npm", &["install"]).await?;
         }
         Language::Python => {
-            run_install(&target_dir, "uv", &["sync"])?;
+            run_install(&target_dir, "uv", &["sync"]).await?;
         }
         Language::Mixed => {
-            run_install(&target_dir.join("nodejs"), "npm", &["install"])?;
-            run_install(&target_dir.join("python"), "uv", &["sync"])?;
+            run_install(&target_dir.join("nodejs"), "npm", &["install"]).await?;
+            run_install(&target_dir.join("python"), "uv", &["sync"]).await?;
         }
     }
 
@@ -427,11 +431,12 @@ fn check_prerequisites(lang: Language) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_install(cwd: &Path, cmd: &str, args: &[&str]) -> anyhow::Result<()> {
-    let status = Command::new(cmd)
+async fn run_install(cwd: &Path, cmd: &str, args: &[&str]) -> anyhow::Result<()> {
+    let status = tokio::process::Command::new(cmd)
         .args(args)
         .current_dir(cwd)
         .status()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to run '{}': {}. Is it installed?", cmd, e))?;
 
     if !status.success() {
