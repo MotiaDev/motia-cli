@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 const REPO: &str = "MotiaDev/motia-iii-example";
-const BRANCH: &str = "add-python-examples";
+const BRANCH: &str = "main";
 const SKIP_FILES: &[&str] = &["package-lock.json", "README.md"];
 
 #[derive(Debug, Deserialize)]
