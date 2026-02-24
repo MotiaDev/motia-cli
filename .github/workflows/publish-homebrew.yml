@@ -126,12 +126,17 @@ jobs:
           echo "Formula updated:"
           cat ${{ env.FORMULA_PATH }}
 
+      - name: Stage formula in local tap
+        run: |
+          cd homebrew-tap
+          git add Formula/motia-cli.rb
+          git -c user.name="ci" -c user.email="ci@localhost" commit -m "update formula"
+
       - name: Test formula locally
         run: |
           brew update
           brew untap MotiaDev/tap 2>/dev/null || true
           brew tap MotiaDev/tap "${{ github.workspace }}/homebrew-tap"
-          echo "=== Running brew audit ==="
           brew audit --new MotiaDev/tap/motia-cli
           brew install --build-from-source MotiaDev/tap/motia-cli
           motia-cli --version
@@ -145,15 +150,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add ${{ env.FORMULA_PATH }}
-          git commit -m "chore: update motia-cli to ${{ github.event.inputs.version }}
+          git commit --amend -m "chore: update motia-cli to ${{ github.event.inputs.version }}
 
-            Automated update from release workflow.
+          Automated update from release workflow.
 
-            Changes:
-            - Version: ${{ github.event.inputs.version }}
-            - x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}
-            - aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}
+          Changes:
+          - Version: ${{ github.event.inputs.version }}
+          - x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}
+          - aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}
           "
 
           git push origin main
