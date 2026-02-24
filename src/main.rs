@@ -18,6 +18,9 @@ enum Commands {
     Create {
         #[arg(help = "Project folder name")]
         name: Option<String>,
+
+        #[arg(long, help = "Use existing directory without prompting")]
+        force: bool,
     },
 }
 
@@ -26,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Create { name } => create::run(name).await?,
+        Commands::Create { name, force } => create::run(name, force).await?,
     }
 
     Ok(())

@@ -31,8 +31,127 @@ impl Language {
     }
 }
 
-pub async fn run(name_arg: Option<String>) -> anyhow::Result<()> {
+fn is_valid_folder_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("Project folder name cannot be empty.");
+    }
+    if name == ".." {
+        return Err("Project folder name cannot be '..'.");
+    }
+    if name.starts_with('/') || name.starts_with('\\') {
+        return Err("Project folder name cannot be an absolute path.");
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err("Project folder name cannot contain path separators.");
+    }
+    let invalid_chars = ['<', '>', ':', '"', '|', '?', '*'];
+    for ch in invalid_chars {
+        if name.contains(ch) {
+            return Err("Project folder name contains invalid characters.");
+        }
+    }
+    Ok(())
+}
+
+fn is_dir_empty(path: &Path) -> bool {
+    path.read_dir()
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false)
+}
+
+fn check_prerequisite(cmd: &str) -> bool {
+    which::which(cmd).is_ok()
+}
+
+fn is_iii_available() -> bool {
+    Command::new("iii")
+        .arg("-v")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn ensure_iii_installed() -> anyhow::Result<()> {
+    if is_iii_available() {
+        println!("\n  {} {} engine detected\n", "✓".green(), "iii".yellow());
+        return Ok(());
+    }
+
+    println!(
+        "\n  {} {} engine not found.\n",
+        "ℹ".blue(),
+        "iii".yellow()
+    );
+
+    let install_cmd = "curl -fsSL https://install.iii.dev/iii/main/install.sh | sh";
+    println!("  Will run: {}\n", install_cmd.dimmed());
+
+    let confirm = dialoguer::Confirm::new()
+        .with_prompt("  Install iii now?")
+        .default(true)
+        .interact()?;
+
+    if !confirm {
+        anyhow::bail!(
+            "iii is required. Install manually: https://iii.dev/docs"
+        );
+    }
+
+    println!();
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("  {spinner:.cyan} {msg}")
+            .unwrap(),
+    );
+    spinner.set_message("Installing iii engine...");
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(install_cmd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    spinner.finish_and_clear();
+
+    match output {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            anyhow::bail!(
+                "iii install script failed (exit {}):\n{}",
+                o.status.code().map_or("unknown".into(), |c| c.to_string()),
+                stderr.trim()
+            );
+        }
+        Err(e) => {
+            anyhow::bail!(
+                "Failed to run install script: {}. Install manually: https://iii.dev/docs",
+                e
+            );
+        }
+    }
+
+    if is_iii_available() {
+        println!("  {} {} engine installed\n", "✓".green(), "iii".yellow());
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "iii was installed but is not on PATH. \
+             Restart your shell or add it to PATH, then try again."
+        );
+    }
+}
+
+pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
     crate::banner::print();
+
+    ensure_iii_installed()?;
 
     let folder_name = match name_arg {
         Some(n) if !n.is_empty() => n,
@@ -42,17 +161,74 @@ pub async fn run(name_arg: Option<String>) -> anyhow::Result<()> {
                 .default("my-motia-project".into())
                 .interact()?;
             if name.is_empty() {
-                eprintln!("\n  Project folder name is required.\n");
-                std::process::exit(1);
+                anyhow::bail!("Project folder name is required.");
             }
             name
         }
     };
 
+    if folder_name != "." {
+        if let Err(msg) = is_valid_folder_name(&folder_name) {
+            anyhow::bail!("{}", msg);
+        }
+    }
+
     let target_dir = std::env::current_dir()?.join(&folder_name);
+
+    if target_dir.exists() && !target_dir.is_dir() {
+        anyhow::bail!(
+            "\"{}\" already exists and is not a directory. Remove or rename it first.",
+            folder_name
+        );
+    }
+
     if target_dir.exists() {
-        eprintln!("\n  Directory \"{}\" already exists.\n", folder_name);
-        std::process::exit(1);
+        if is_dir_empty(&target_dir) {
+            println!(
+                "\n  {} Directory \"{}\" exists but is empty, using it.\n",
+                "ℹ".blue(),
+                folder_name
+            );
+        } else if force {
+            println!(
+                "\n  {} Using existing directory \"{}\" (--force).\n",
+                "⚠".yellow(),
+                folder_name
+            );
+        } else {
+            let action_idx = dialoguer::Select::new()
+                .with_prompt(format!(
+                    "  Directory \"{}\" already exists. What would you like to do?",
+                    folder_name
+                ))
+                .items(&[
+                    "Use existing directory (merge template files into it)",
+                    "Overwrite (delete existing contents first)",
+                    "Cancel",
+                ])
+                .default(0)
+                .interact()?;
+
+            match action_idx {
+                0 => {
+                    println!(
+                        "\n  {} Merging template into existing directory.\n",
+                        "ℹ".blue(),
+                    );
+                }
+                1 => {
+                    println!(
+                        "\n  {} Removing existing directory contents...\n",
+                        "⚠".yellow(),
+                    );
+                    std::fs::remove_dir_all(&target_dir)?;
+                }
+                _ => {
+                    println!("\n  Cancelled.\n");
+                    return Ok(());
+                }
+            }
+        }
     }
 
     let lang_idx = dialoguer::Select::new()
@@ -71,50 +247,54 @@ pub async fn run(name_arg: Option<String>) -> anyhow::Result<()> {
         _ => Language::Mixed,
     };
 
-    let has_iii = dialoguer::Confirm::new()
-        .with_prompt("  Do you have iii installed?")
-        .default(true)
-        .interact()?;
+    check_prerequisites(lang)?;
 
-    if !has_iii {
-        println!();
-        println!("  Motia is now powered by iii for step orchestration.");
-        println!("  iii is the backend engine that runs your Motia steps,");
-        println!("  handling APIs, queues, state, and workflows in a single runtime.");
-        println!();
-        println!("  Install iii → {}https://iii.dev/docs{}", "\x1b[1m", "\x1b[0m");
-        println!();
-    }
-
+    let display_name = if folder_name == "." {
+        "current directory".to_string()
+    } else {
+        format!("./{}", folder_name)
+    };
     println!();
-    println!("  Creating project in ./{}", folder_name);
+    println!("  Creating project in {}", display_name);
     println!();
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent("motia-cli")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
     let template_prefix = lang.template_prefix();
-    let files = github::fetch_tree(&client, template_prefix).await?;
-
-    if files.is_empty() {
-        anyhow::bail!("No template files found");
-    }
+    let files = match github::fetch_tree(&client, template_prefix).await {
+        Ok(f) if f.is_empty() => {
+            anyhow::bail!(
+                "No template files found for {}. Check your network connection and try again.",
+                lang.display_name()
+            );
+        }
+        Ok(f) => f,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("403") {
+                anyhow::bail!(
+                    "GitHub API rate limit exceeded. Wait a few minutes and try again, \
+                     or set GITHUB_TOKEN to increase your rate limit."
+                );
+            }
+            anyhow::bail!("Failed to fetch template: {}", e);
+        }
+    };
 
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("  {spinner:.dim} {msg}")
+            .template("  {spinner:.dim} [{bar:20.cyan/dim}] {pos}/{len} {msg}")
             .unwrap()
-            .progress_chars("▸▹▹▹"),
+            .progress_chars("━╸─"),
     );
 
     let mut dirs = std::collections::HashSet::new();
     for path in &files {
-        let rel_path = if template_prefix.is_empty() {
-            path.clone()
-        } else {
-            path.strip_prefix(&format!("{}/", template_prefix))
-                .unwrap_or(path)
-                .to_string()
-        };
+        let rel_path = strip_template_prefix(path, template_prefix);
         if let Some(parent) = Path::new(&rel_path).parent() {
             let parent_str = parent.to_string_lossy();
             if !parent_str.is_empty() {
@@ -128,17 +308,19 @@ pub async fn run(name_arg: Option<String>) -> anyhow::Result<()> {
         std::fs::create_dir_all(target_dir.join(dir))?;
     }
 
+    let mut failures: Vec<String> = Vec::new();
+
     for (i, path) in files.iter().enumerate() {
-        pb.set_message(path.clone());
+        let rel_path = strip_template_prefix(path, template_prefix);
+        pb.set_message(rel_path.clone());
         pb.set_position((i + 1) as u64);
 
-        let content = github::download_file(&client, path).await?;
-        let rel_path = if template_prefix.is_empty() {
-            path.clone()
-        } else {
-            path.strip_prefix(&format!("{}/", template_prefix))
-                .unwrap_or(path)
-                .to_string()
+        let content = match github::download_file(&client, path).await {
+            Ok(c) => c,
+            Err(e) => {
+                failures.push(format!("{} (download: {})", rel_path, e));
+                continue;
+            }
         };
 
         let out_path = target_dir.join(&rel_path);
@@ -146,35 +328,55 @@ pub async fn run(name_arg: Option<String>) -> anyhow::Result<()> {
 
         if rel_path.ends_with("package.json") {
             if let Ok(mut pkg) = serde_json::from_str::<serde_json::Value>(&final_content) {
-                let name = if rel_path.contains("nodejs/") {
-                    format!("{}-nodejs", folder_name)
+                let base_name = if folder_name == "." {
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                        .unwrap_or_else(|| "my-motia-project".to_string())
                 } else {
                     folder_name.clone()
+                };
+                let name = if rel_path.contains("nodejs/") {
+                    format!("{}-nodejs", base_name)
+                } else {
+                    base_name
                 };
                 pkg["name"] = serde_json::Value::String(name);
                 final_content = serde_json::to_string_pretty(&pkg)?;
             }
         }
 
-        std::fs::write(&out_path, final_content)?;
+        if let Err(e) = std::fs::write(&out_path, final_content) {
+            failures.push(format!("{} (write: {})", rel_path, e));
+        }
     }
 
-    pb.finish_with_message("");
+    pb.finish_and_clear();
 
-    println!();
+    if !failures.is_empty() {
+        println!(
+            "  {} Some files failed:",
+            "⚠".yellow()
+        );
+        for f in &failures {
+            println!("    - {}", f);
+        }
+        println!();
+    }
+
     println!("  Installing dependencies...");
     println!();
 
     match lang {
         Language::NodeJs => {
-            run_install(&target_dir, "npm install")?;
+            run_install(&target_dir, "npm", &["install"]).await?;
         }
         Language::Python => {
-            run_install(&target_dir, "uv sync")?;
+            run_install(&target_dir, "uv", &["sync"]).await?;
         }
         Language::Mixed => {
-            run_install(&target_dir.join("nodejs"), "npm install")?;
-            run_install(&target_dir.join("python"), "uv sync")?;
+            run_install(&target_dir.join("nodejs"), "npm", &["install"]).await?;
+            run_install(&target_dir.join("python"), "uv", &["sync"]).await?;
         }
     }
 
@@ -182,22 +384,85 @@ pub async fn run(name_arg: Option<String>) -> anyhow::Result<()> {
     println!("  {} Project created successfully!", "✓".green());
     println!();
     println!("  Next steps:");
-    println!("    cd {}", folder_name);
+    if folder_name != "." {
+        println!("    cd {}", folder_name);
+    }
     println!("    iii -c iii-config.yaml");
     println!();
 
     Ok(())
 }
 
-fn run_install(cwd: &Path, cmd: &str) -> anyhow::Result<()> {
-    let parts: Vec<&str> = cmd.split_whitespace().collect();
-    let (cmd, args) = parts.split_first().unwrap_or((&"", &[]));
-    let status = Command::new(cmd)
+fn strip_template_prefix(path: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        path.to_string()
+    } else {
+        path.strip_prefix(&format!("{}/", prefix))
+            .unwrap_or(path)
+            .to_string()
+    }
+}
+
+fn check_prerequisites(lang: Language) -> anyhow::Result<()> {
+    let mut missing: Vec<&str> = Vec::new();
+
+    match lang {
+        Language::NodeJs => {
+            if !check_prerequisite("node") {
+                missing.push("node (v18+)");
+            }
+            if !check_prerequisite("npm") {
+                missing.push("npm");
+            }
+        }
+        Language::Python => {
+            if !check_prerequisite("python3") {
+                missing.push("python3 (v3.10+)");
+            }
+            if !check_prerequisite("uv") {
+                missing.push("uv");
+            }
+        }
+        Language::Mixed => {
+            if !check_prerequisite("node") {
+                missing.push("node (v18+)");
+            }
+            if !check_prerequisite("npm") {
+                missing.push("npm");
+            }
+            if !check_prerequisite("python3") {
+                missing.push("python3 (v3.10+)");
+            }
+            if !check_prerequisite("uv") {
+                missing.push("uv");
+            }
+        }
+    }
+
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "Missing required tools: {}. Please install them before continuing.",
+            missing.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_install(cwd: &Path, cmd: &str, args: &[&str]) -> anyhow::Result<()> {
+    let status = tokio::process::Command::new(cmd)
         .args(args)
         .current_dir(cwd)
-        .status()?;
+        .status()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to run '{}': {}. Is it installed?", cmd, e))?;
+
     if !status.success() {
-        anyhow::bail!("{} failed with exit code {:?}", cmd, status.code());
+        anyhow::bail!(
+            "'{}' failed with exit code {}.",
+            cmd,
+            status.code().map_or("unknown".to_string(), |c| c.to_string())
+        );
     }
     Ok(())
 }
