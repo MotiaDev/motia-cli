@@ -129,7 +129,9 @@ jobs:
       - name: Test formula locally
         run: |
           brew update
-          brew tap MotiaDev/tap "$GITHUB_WORKSPACE/homebrew-tap"
+          brew untap MotiaDev/tap 2>/dev/null || true
+          brew tap MotiaDev/tap "${{ github.workspace }}/homebrew-tap"
+          echo "=== Running brew audit ==="
           brew audit --new MotiaDev/tap/motia-cli
           brew install --build-from-source MotiaDev/tap/motia-cli
           motia-cli --version
