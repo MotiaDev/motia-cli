@@ -1,0 +1,171 @@
+name: Publish to Homebrew
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  TAP_REPO: MotiaDev/homebrew-tap
+  FORMULA_PATH: Formula/motia-cli.rb
+
+jobs:
+  publish-homebrew:
+    name: Update Homebrew Formula
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Expected: v1.2.3"
+            exit 1
+          fi
+
+          if [[ "$VERSION" =~ - ]]; then
+            echo "Error: Pre-release versions not allowed in Homebrew"
+            exit 1
+          fi
+
+          echo "Version validated: $VERSION"
+
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.MOTIA_CI_APP_ID }}
+          private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
+          owner: MotiaDev
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ steps.generate_token.outputs.token }}
+          path: homebrew-tap
+
+      - name: Download release assets
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+
+          curl -L --fail -o motia-cli-x86_64.tar.gz \
+            "https://github.com/MotiaDev/motia-cli/releases/download/${VERSION}/motia-cli-x86_64-apple-darwin.tar.gz"
+
+          curl -L --fail -o motia-cli-aarch64.tar.gz \
+            "https://github.com/MotiaDev/motia-cli/releases/download/${VERSION}/motia-cli-aarch64-apple-darwin.tar.gz"
+
+          for file in motia-cli-x86_64.tar.gz motia-cli-aarch64.tar.gz; do
+            if [ ! -s "$file" ]; then
+              echo "Error: $file is missing or empty"
+              exit 1
+            fi
+          done
+          ls -lh *.tar.gz
+
+      - name: Calculate SHA256 checksums
+        id: checksums
+        run: |
+          X86_SHA=$(shasum -a 256 motia-cli-x86_64.tar.gz | awk '{print $1}')
+          ARM_SHA=$(shasum -a 256 motia-cli-aarch64.tar.gz | awk '{print $1}')
+
+          echo "x86_64_sha256=${X86_SHA}" >> $GITHUB_OUTPUT
+          echo "aarch64_sha256=${ARM_SHA}" >> $GITHUB_OUTPUT
+
+          echo "Checksums calculated:"
+          echo "  x86_64: ${X86_SHA}"
+          echo "  aarch64: ${ARM_SHA}"
+
+      - name: Update formula
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          X86_SHA="${{ steps.checksums.outputs.x86_64_sha256 }}"
+          ARM_SHA="${{ steps.checksums.outputs.aarch64_sha256 }}"
+
+          cd homebrew-tap
+
+          sed 's/^          //' <<BREWEOF > ${{ env.FORMULA_PATH }}
+          class MotiaCli < Formula
+            desc "CLI for scaffolding Motia projects"
+            homepage "https://github.com/MotiaDev/motia-cli"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/MotiaDev/motia-cli/releases/download/${VERSION}/motia-cli-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM_SHA}"
+              else
+                url "https://github.com/MotiaDev/motia-cli/releases/download/${VERSION}/motia-cli-x86_64-apple-darwin.tar.gz"
+                sha256 "${X86_SHA}"
+              end
+            end
+
+            def install
+              bin.install "motia-cli"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/motia-cli --version")
+            end
+          end
+          BREWEOF
+
+          echo "Formula updated:"
+          cat ${{ env.FORMULA_PATH }}
+
+      - name: Test formula locally
+        run: |
+          brew update
+          brew tap MotiaDev/tap "$GITHUB_WORKSPACE/homebrew-tap"
+          brew audit --new MotiaDev/tap/motia-cli
+          brew install --build-from-source MotiaDev/tap/motia-cli
+          motia-cli --version
+          brew uninstall motia-cli
+
+      - name: Commit and push changes
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          cd homebrew-tap
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add ${{ env.FORMULA_PATH }}
+          git commit -m "chore: update motia-cli to ${{ github.event.inputs.version }}
+
+            Automated update from release workflow.
+
+            Changes:
+            - Version: ${{ github.event.inputs.version }}
+            - x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}
+            - aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}
+          "
+
+          git push origin main
+
+          echo "Formula published to homebrew-tap!"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "DRY RUN MODE - No changes pushed"
+          echo ""
+          echo "Formula validated successfully:"
+          echo "- Version: ${{ github.event.inputs.version }}"
+          echo "- x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}"
+          echo "- aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}"
+          echo "- Formula passes brew audit"
+          echo "- Installation test passed"
+          echo ""
+          echo "Set dry_run=false to publish for real."

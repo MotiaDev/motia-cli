@@ -1,0 +1,21 @@
+[package]
+name = "motia-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI for scaffolding Motia projects"
+license = "Elastic-2.0"
+
+[[bin]]
+name = "motia-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+dialoguer = { version = "0.11", features = ["completion"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+colored = "2"
+indicatif = "0.17"
+anyhow = "1"
