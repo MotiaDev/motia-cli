@@ -69,8 +69,79 @@ fn check_prerequisite(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_iii_available() -> bool {
+    Command::new("iii")
+        .arg("-v")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn ensure_iii_installed() -> anyhow::Result<()> {
+    if is_iii_available() {
+        println!("\n  {} {} engine detected\n", "✓".green(), "iii".yellow());
+        return Ok(());
+    }
+
+    println!(
+        "\n  {} {} engine not found. Installing...\n",
+        "ℹ".blue(),
+        "iii".yellow()
+    );
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("  {spinner:.cyan} {msg}")
+            .unwrap(),
+    );
+    spinner.set_message("Installing iii engine...");
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("curl -fsSL https://install.iii.dev/iii/main/install.sh | sh")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    spinner.finish_and_clear();
+
+    match output {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            anyhow::bail!(
+                "iii install script failed (exit {}):\n{}",
+                o.status.code().map_or("unknown".into(), |c| c.to_string()),
+                stderr.trim()
+            );
+        }
+        Err(e) => {
+            anyhow::bail!(
+                "Failed to run install script: {}. Install manually: https://iii.dev/docs",
+                e
+            );
+        }
+    }
+
+    if is_iii_available() {
+        println!("  {} {} engine installed\n", "✓".green(), "iii".yellow());
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "iii was installed but is not on PATH. \
+             Restart your shell or add it to PATH, then try again."
+        );
+    }
+}
+
 pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
     crate::banner::print();
+
+    ensure_iii_installed()?;
 
     let folder_name = match name_arg {
         Some(n) if !n.is_empty() => n,
@@ -160,24 +231,6 @@ pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
     };
 
     check_prerequisites(lang)?;
-
-    let has_iii = dialoguer::Confirm::new()
-        .with_prompt("  Do you have iii installed?")
-        .default(true)
-        .interact()?;
-
-    if !has_iii {
-        println!();
-        println!("  Motia is now powered by iii for step orchestration.");
-        println!("  iii is the backend engine that runs your Motia steps,");
-        println!("  handling APIs, queues, state, and workflows in a single runtime.");
-        println!();
-        println!(
-            "  Install iii → {}https://iii.dev/docs{}",
-            "\x1b[1m", "\x1b[0m"
-        );
-        println!();
-    }
 
     let display_name = if folder_name == "." {
         "current directory".to_string()
