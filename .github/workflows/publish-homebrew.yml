@@ -100,12 +100,14 @@ jobs:
           class MotiaCli < Formula
             desc "CLI for scaffolding Motia projects"
             homepage "https://github.com/MotiaDev/motia-cli"
+            license "Apache-2.0"
 
             on_macos do
-              if Hardware::CPU.arm?
+              on_arm do
                 url "https://github.com/MotiaDev/motia-cli/releases/download/${VERSION}/motia-cli-aarch64-apple-darwin.tar.gz"
                 sha256 "${ARM_SHA}"
-              else
+              end
+              on_intel do
                 url "https://github.com/MotiaDev/motia-cli/releases/download/${VERSION}/motia-cli-x86_64-apple-darwin.tar.gz"
                 sha256 "${X86_SHA}"
               end
