@@ -80,10 +80,26 @@ fn ensure_iii_installed() -> anyhow::Result<()> {
     }
 
     println!(
-        "\n  {} {} engine not found. Installing...\n",
+        "\n  {} {} engine not found.\n",
         "ℹ".blue(),
         "iii".yellow()
     );
+
+    let install_cmd = "curl -fsSL https://install.iii.dev/iii/main/install.sh | sh";
+    println!("  Will run: {}\n", install_cmd.dimmed());
+
+    let confirm = dialoguer::Confirm::new()
+        .with_prompt("  Install iii now?")
+        .default(true)
+        .interact()?;
+
+    if !confirm {
+        anyhow::bail!(
+            "iii is required. Install manually: https://iii.dev/docs"
+        );
+    }
+
+    println!();
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
@@ -96,7 +112,7 @@ fn ensure_iii_installed() -> anyhow::Result<()> {
 
     let output = Command::new("sh")
         .arg("-c")
-        .arg("curl -fsSL https://install.iii.dev/iii/main/install.sh | sh")
+        .arg(install_cmd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output();
@@ -292,7 +308,7 @@ pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
         std::fs::create_dir_all(target_dir.join(dir))?;
     }
 
-    let mut failed_downloads: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
 
     for (i, path) in files.iter().enumerate() {
         let rel_path = strip_template_prefix(path, template_prefix);
@@ -302,7 +318,7 @@ pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
         let content = match github::download_file(&client, path).await {
             Ok(c) => c,
             Err(e) => {
-                failed_downloads.push(format!("{} ({})", rel_path, e));
+                failures.push(format!("{} (download: {})", rel_path, e));
                 continue;
             }
         };
@@ -330,17 +346,19 @@ pub async fn run(name_arg: Option<String>, force: bool) -> anyhow::Result<()> {
             }
         }
 
-        std::fs::write(&out_path, final_content)?;
+        if let Err(e) = std::fs::write(&out_path, final_content) {
+            failures.push(format!("{} (write: {})", rel_path, e));
+        }
     }
 
     pb.finish_and_clear();
 
-    if !failed_downloads.is_empty() {
+    if !failures.is_empty() {
         println!(
-            "  {} Some files failed to download:",
+            "  {} Some files failed:",
             "⚠".yellow()
         );
-        for f in &failed_downloads {
+        for f in &failures {
             println!("    - {}", f);
         }
         println!();
